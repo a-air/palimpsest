@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 memory-refiner —— 记忆精炼与奖励引擎（支援未来版）
@@ -41,7 +41,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parent
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 CONFIG = ROOT / "config.json"          # 本地配置（gitignore），优先级高于环境变量之外的一切
 DSH_CRED = Path(os.environ.get("USERPROFILE", os.path.expanduser("~"))) / ".dsh" / ".credentials.yaml"
 ARCHIVE = ROOT / "archive"
@@ -839,6 +839,166 @@ def node_to_text(node: dict) -> str:
 
 FACTS = STATE / "facts.jsonl"
 DB = STATE / "memory.db"
+COLD = ROOT / "cold"                 # 冷箱：非用户要求，平时不读
+LIFECYCLE = STATE / "lifecycle.json"
+REVIEW_EVERY = 4                     # 每 4 次封存解锁一次审核
+PASS_SCORE = 85                      # 核验通过线
+
+
+def load_lifecycle() -> dict:
+    if LIFECYCLE.exists():
+        try:
+            return json.loads(read(LIFECYCLE))
+        except Exception:
+            pass
+    return {"batches": [], "packs": []}
+
+
+def save_lifecycle(data: dict):
+    ensure_dirs()
+    tmp = LIFECYCLE.with_name(LIFECYCLE.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, LIFECYCLE)
+
+
+def _batch_dirs() -> list:
+    """archive 下所有批次目录（按时间升序）。"""
+    if not ARCHIVE.exists():
+        return []
+    return sorted([p for p in ARCHIVE.iterdir() if p.is_dir()])
+
+
+def _batch_state(data: dict, rel: str) -> str:
+    for b in data["batches"]:
+        if b["dir"] == rel:
+            return b["state"]
+    return "hot"
+
+
+def cmd_seal(args) -> int:
+    """封存当前批次：只提醒一次，然后进入封存态。原文不读，只有节点参与后续。"""
+    data = load_lifecycle()
+    dirs = _batch_dirs()
+    if not dirs:
+        print("没有可封存的批次，先压缩一次。")
+        return 1
+
+    target = None
+    for d in reversed(dirs):
+        rel = str(d.relative_to(ROOT))
+        if not any(b["dir"] == rel for b in data["batches"]):
+            target = d
+            break
+    if target is None:
+        print("所有批次都已封存，没有可封存的了。")
+        return 0
+    rel = str(target.relative_to(ROOT))
+
+    if not args.yes:
+        print("关于要封存的内容：")
+        print("  · 原文保留不动，但封存后**不再参与日常读取**")
+        print("  · 之后只读精炼后的节点")
+        print("  · 每 4 次封存解锁一次核验；核验 ≥85 才打包进冷箱（冷箱平时也不读）")
+        try:
+            ans = input("确认封存？[y/N] ").strip().lower()
+        except EOFError:
+            ans = "n"
+        if ans not in ("y", "yes", "是"):
+            print("已取消。")
+            return 0
+
+    data["batches"].append({
+        "dir": rel, "state": "sealed",
+        "sealed_at": now().isoformat(),
+        "review": None,
+    })
+    save_lifecycle(data)
+
+    sealed = [b for b in data["batches"] if b["state"] == "sealed"]
+    print(f"[已封存] {rel}（当前封存 {len(sealed)} 份，每 {REVIEW_EVERY} 份解锁一次核验）")
+    if len(sealed) >= REVIEW_EVERY and len(sealed) % REVIEW_EVERY == 0:
+        print("=> 可以核验了：python refiner.py review")
+    return 0
+
+
+def cmd_review(args) -> int:
+    """核验最近 N 份封存：平均分（或最低分）≥ 阈值才打包进冷箱。"""
+    data = load_lifecycle()
+    sealed = [b for b in data["batches"] if b["state"] == "sealed"]
+    if len(sealed) < REVIEW_EVERY:
+        print(f"封存还不够：{len(sealed)}/{REVIEW_EVERY}")
+        return 1
+
+    sample = sealed[-REVIEW_EVERY:]
+    results = []
+    for b in sample:
+        d = ROOT / b["dir"]
+        nodes = sorted(d.glob("*_node.json"))
+        raws = sorted(d.glob("*_raw.md"))
+        if not nodes or not raws:
+            results.append({"dir": b["dir"], "error": "缺 node 或 raw"})
+            continue
+        node = json.loads(read(nodes[-1]))
+        raw = read(raws[-1])
+        sc = score(raw, node_to_text(node), claim_text=node_claims(node))
+        results.append({"dir": b["dir"], "score": sc["score"],
+                        "recall": sc["recall"], "precision": sc["precision"]})
+
+    good = [r for r in results if "score" in r]
+    print(f"核验 {len(sample)} 份封存：")
+    for r in results:
+        if "error" in r:
+            print(f"  {r['dir']}  ⚠ {r['error']}")
+        else:
+            print(f"  {r['dir']}  分数 {r['score']}（召回 {r['recall']} / 精确 {r['precision']}）")
+
+    if len(good) < REVIEW_EVERY:
+        print("有批次缺文件，暂不打包。")
+        return 1
+
+    avg = sum(r["score"] for r in good) / len(good)
+    low = min(r["score"] for r in good)
+    threshold = args.pass_score
+    print(f"平均 {avg:.1f} ｜ 最低 {low:.1f} ｜ 通过线 {threshold}")
+
+    passed = (avg >= threshold) and (low >= threshold - 10)
+    if not passed:
+        print("未通过：留在封存态，下次再核。")
+        return 1
+
+    pack_name = stamp() + "_pack"
+    pack_dir = COLD / pack_name
+    pack_dir.mkdir(parents=True, exist_ok=True)
+    moved = []
+    for b in sample:
+        src = ROOT / b["dir"]
+        dst = pack_dir / src.name
+        if src.exists():
+            shutil.move(str(src), str(dst))
+            moved.append(dst.name)
+        b["state"] = "cold"
+        b["review"] = {"score": next((r["score"] for r in good if r["dir"] == b["dir"]), None),
+                       "pack": pack_name, "at": now().isoformat()}
+    (pack_dir / "manifest.json").write_text(json.dumps({
+        "created_at": now().isoformat(), "batches": moved,
+        "avg_score": round(avg, 1), "min_score": round(low, 1), "results": results,
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    data["packs"].append({"name": pack_name, "batches": moved, "avg": round(avg, 1)})
+    save_lifecycle(data)
+    print(f"[已入冷箱] {pack_dir}（{len(moved)} 份）")
+    print("冷箱平时不读；要看就加 --cold。")
+    return 0
+
+
+def cmd_cold(args) -> int:
+    data = load_lifecycle()
+    if not data["packs"]:
+        print("冷箱是空的。")
+        return 0
+    for p in data["packs"]:
+        print(f"  {p['name']}  ｜ {len(p['batches'])} 份 ｜ 平均 {p['avg']}")
+    print(f"\n位置：{COLD}")
+    return 0
 
 
 def db() -> sqlite3.Connection:
@@ -861,9 +1021,11 @@ def db() -> sqlite3.Connection:
 
 
 def cmd_index(args) -> int:
-    """把 archive/ 全量灌进 SQLite（可重复执行，幂等）。"""
+    """把 archive/ 全量灌进 SQLite（可重复执行，幂等）。冷箱默认不收，加 --cold 才收。"""
     conn = db()
     files = sorted(ARCHIVE.glob("*/*_node.json"))
+    if getattr(args, "cold", False) and COLD.exists():
+        files += sorted(COLD.rglob("*_node.json"))
     n = 0
     for f in files:
         rel = str(f.relative_to(ROOT))
@@ -1592,6 +1754,7 @@ def main() -> int:
     p12.set_defaults(func=cmd_setup)
 
     p13 = sub.add_parser("index", help="把归档灌进 SQLite 索引（可重复跑）")
+    p13.add_argument("--cold", action="store_true", help="把冷箱也收进索引")
     p13.set_defaults(func=cmd_index)
 
     p14 = sub.add_parser("search", help="在索引里搜（FTS5 子串，不遍历文件）")
@@ -1603,6 +1766,17 @@ def main() -> int:
     p15.add_argument("--raw", default="", help="不传就从 stdin 读")
     p15.add_argument("--keep-turns", type=int, default=4, dest="keep_turns")
     p15.set_defaults(func=cmd_context)
+
+    p16 = sub.add_parser("seal", help="封存当前批次（提醒一次，之后只读节点）")
+    p16.add_argument("--yes", action="store_true", help="跳过确认")
+    p16.set_defaults(func=cmd_seal)
+
+    p17 = sub.add_parser("review", help="核验最近 4 份封存，≥85 才进冷箱")
+    p17.add_argument("--pass-score", type=float, default=PASS_SCORE, dest="pass_score")
+    p17.set_defaults(func=cmd_review)
+
+    p18 = sub.add_parser("cold", help="看冷箱里有什么")
+    p18.set_defaults(func=cmd_cold)
 
     args = ap.parse_args()
     return args.func(args)

@@ -148,6 +148,30 @@ python refiner.py compress --raw dlg.md --keep-turns 4
 
 ---
 
+## 生命周期：热 → 封存 → 冷箱
+
+平时**只读精炼后的节点**，不读封存的原文——这是上下文压力的主要来源。
+
+```
+压缩 → [热] 当前批次，随时可用
+   ↓ seal（压缩前提醒一次，确认后封存）
+[封存] 原文留着，但不参与日常读取
+   ↓ 每 4 次封存解锁一次 review
+[冷箱] 核验 ≥85 才打包；平时不读，index --cold 才收录
+```
+
+```bash
+python refiner.py seal      # 提醒一次 → 封存当前批次
+python refiner.py review    # 核验最近 4 份封存；平均 ≥85 且最低 ≥75 才进冷箱
+python refiner.py cold      # 看冷箱里有什么
+```
+
+- 封存/冷箱都是**搬家不是删除**，原文一个字不少
+- 核验不通过就留在封存态，下次再核
+- 冷箱里的节点默认不进索引、不进召回——要读得显式要
+
+---
+
 ## 命令
 
 | 命令 | 作用 | 是否要模型 |
@@ -161,6 +185,9 @@ python refiner.py compress --raw dlg.md --keep-turns 4
 | `index` | 归档灌进 SQLite 索引 | 不要 |
 | `search` | FTS5 子串检索 | 不要 |
 | `context` | 看 token 占比、要不要压缩 | 不要 |
+| `seal` | 封存当前批次（提醒一次） | 不要 |
+| `review` | 核验 4 份封存，≥85 进冷箱 | 不要 |
+| `cold` | 看冷箱 | 不要 |
 | `facts` | 列出活跃事实 | 不要 |
 | `history` | 看版本链 | 不要 |
 | `rebuild` | 从 archive 重建事实库 | 可选 |
