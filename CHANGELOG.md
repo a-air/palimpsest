@@ -147,3 +147,22 @@
 ### 测试
 - 新增 `tests/test_lifecycle.py`（3 项）：不足 4 份不许核验、通过则入冷箱、不通过保持封存
 - 六套共 32 项
+## v1.0.0 — 2026-10-25（发布版）
+
+### 状态机补完
+- 显式状态：`sealed → reviewing → packing → cold`，另有 `quarantine`（隔离区）
+- **崩溃恢复**：`recover_packing()` 按磁盘真相把"搬到一半"的批次对齐；新增 `recover` 命令
+- **三步落盘**：先记账（packing + plan）→ 再搬（每搬一个写一次）→ 最后定稿（manifest）
+- **FIFO 采样**：最老的 4 份先审，失败的批次不会被新批次饿死
+- **失败晋级**：第 1 次打回排队 / 第 2 次自动"打回重练"（重新精炼）/ 第 3 次进隔离区
+- **文件锁**：`state/lifecycle.lock`，10 分钟僵死锁可抢占，拿不到就返回原因不阻塞
+- 全程不抛异常，失败一律 `return code + 原因 + 下一步`
+
+### 三样工程验证
+- `scripts/bench_scale.py`：3000 节点 → 索引 8.2s、检索平均 1.5ms、库 8MB
+- `scripts/integration_smoke.py`：真调模型，compress 8 条事实、探针 3/3 命中
+- `scripts/calibrate.py`：6 级缺陷梯度，Spearman ρ=0.83
+
+### 测试
+- 新增 `tests/test_state_machine.py`（5 项）：崩溃恢复、隔离晋级、FIFO 不饿死、锁、僵死锁
+- 七套共 37 项

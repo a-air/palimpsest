@@ -27,6 +27,8 @@ jobs:
         run: python tests/test_review_fixes.py
       - name: 生命周期测试
         run: python tests/test_lifecycle.py
+      - name: 状态机测试
+        run: python tests/test_state_machine.py
       - name: CLI 冒烟测试
         run: python tests/test_cli_smoke.py
       - name: 语法检查

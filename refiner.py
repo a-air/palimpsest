@@ -31,6 +31,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 import unicodedata
 import urllib.error
 import urllib.request
@@ -41,7 +42,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parent
-__version__ = "0.5.0"
+__version__ = "1.0.0"
 CONFIG = ROOT / "config.json"          # 本地配置（gitignore），优先级高于环境变量之外的一切
 DSH_CRED = Path(os.environ.get("USERPROFILE", os.path.expanduser("~"))) / ".dsh" / ".credentials.yaml"
 ARCHIVE = ROOT / "archive"
@@ -844,6 +845,98 @@ LIFECYCLE = STATE / "lifecycle.json"
 REVIEW_EVERY = 4                     # 每 4 次封存解锁一次审核
 PASS_SCORE = 85                      # 核验通过线
 
+LOCK = STATE / "lifecycle.lock"
+LOCK_STALE_SEC = 600                 # 超过 10 分钟视为僵死锁
+MAX_ATTEMPTS = 3                     # 3 次不过 → 隔离区
+
+
+def acquire_lock() -> tuple:
+    """文件锁：拿不到就返回原因，绝不阻塞、绝不抛异常。"""
+    ensure_dirs()
+    if LOCK.exists():
+        try:
+            info = json.loads(read(LOCK))
+            age = time.time() - float(info.get("ts", 0))
+        except Exception:
+            info, age = {}, LOCK_STALE_SEC + 1
+        if age < LOCK_STALE_SEC:
+            return False, f"另一个进程正在跑（pid={info.get('pid','?')}，{int(age)}s 前拿的锁）"
+        try:
+            LOCK.unlink()
+        except Exception:
+            pass
+    try:
+        fd = os.open(str(LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, json.dumps({"pid": os.getpid(), "ts": time.time()}).encode("utf-8"))
+        os.close(fd)
+        return True, "ok"
+    except FileExistsError:
+        return False, "抢锁失败：刚好被别的进程创建"
+    except Exception as e:
+        return False, f"抢锁异常：{type(e).__name__}"
+
+
+def release_lock():
+    try:
+        LOCK.unlink()
+    except Exception:
+        pass
+
+
+def _find_batch(data: dict, rel: str):
+    return next((b for b in data["batches"] if b["dir"] == rel), None)
+
+
+def _sealed_fifo(data: dict) -> list:
+    """FIFO：最老的先审，失败的批次不会被新批次饿死。"""
+    sealed = [b for b in data["batches"] if b["state"] == "sealed"]
+    return sorted(sealed, key=lambda b: b.get("sealed_at", ""))
+
+
+def recover_packing(data: dict) -> list:
+    """崩溃恢复：把 packing 状态的批次对齐到磁盘真相（幂等，可反复跑）。"""
+    notes = []
+    for b in data["batches"]:
+        if b.get("state") != "packing":
+            continue
+        plan = b.get("plan") or {}
+        pack_dir = ROOT / plan.get("pack_dir", "")
+        dst = pack_dir / Path(b["dir"]).name
+        src = ROOT / b["dir"]
+        if dst.exists():
+            b["state"] = "cold"
+            b["review"] = {"pack": plan.get("pack"), "at": now().isoformat(),
+                           "score": (b.get("review") or {}).get("score")}
+            notes.append(f"{b['dir']} 已在冷箱，标记为 cold")
+        elif src.exists():
+            b["state"] = "sealed"
+            b["plan"] = None
+            notes.append(f"{b['dir']} 还没搬，退回 sealed")
+        else:
+            b["state"] = "quarantine"
+            b["note"] = "打包中途文件丢失"
+            notes.append(f"{b['dir']} 文件不见了，进隔离区")
+    if notes:
+        save_lifecycle(data)
+    return notes
+
+
+def cmd_recover(args) -> int:
+    ok, why = acquire_lock()
+    if not ok:
+        print(f"跳过：{why}")
+        return 2
+    try:
+        data = load_lifecycle()
+        notes = recover_packing(data)
+        for n in notes:
+            print("  " + n)
+        if not notes:
+            print("没有需要恢复的中途状态。")
+        return 0
+    finally:
+        release_lock()
+
 
 def load_lifecycle() -> dict:
     if LIFECYCLE.exists():
@@ -921,73 +1014,137 @@ def cmd_seal(args) -> int:
     return 0
 
 
+def _score_batch(b: dict):
+    d = ROOT / b["dir"]
+    nodes = sorted(d.glob("*_node.json"))
+    raws = sorted(d.glob("*_raw.md"))
+    if not nodes or not raws:
+        return {"dir": b["dir"], "error": "缺 node 或 raw"}
+    node = json.loads(read(nodes[-1]))
+    raw = read(raws[-1])
+    sc = score(raw, node_to_text(node), claim_text=node_claims(node))
+    return {"dir": b["dir"], "score": sc["score"], "recall": sc["recall"], "precision": sc["precision"]}
+
+
+def _refine_batch(b: dict, key: str) -> bool:
+    """打回重练：拿原文重新精炼一次，覆盖节点。失败不抛异常。"""
+    if not key:
+        return False
+    d = ROOT / b["dir"]
+    raws = sorted(d.glob("*_raw.md"))
+    if not raws:
+        return False
+    try:
+        node, _chunks = compress_pool(read(raws[-1]), key)
+    except Exception:
+        return False
+    nodes = sorted(d.glob("*_node.json"))
+    target = nodes[-1] if nodes else (d / (stamp() + "_node.json"))
+    target.write_text(json.dumps(node, ensure_ascii=False, indent=2), encoding="utf-8")
+    return True
+
+
 def cmd_review(args) -> int:
-    """核验最近 N 份封存：平均分（或最低分）≥ 阈值才打包进冷箱。"""
-    data = load_lifecycle()
-    sealed = [b for b in data["batches"] if b["state"] == "sealed"]
-    if len(sealed) < REVIEW_EVERY:
-        print(f"封存还不够：{len(sealed)}/{REVIEW_EVERY}")
-        return 1
+    """核验：FIFO 取最老的 4 份封存，达标才打包进冷箱。
 
-    sample = sealed[-REVIEW_EVERY:]
-    results = []
-    for b in sample:
-        d = ROOT / b["dir"]
-        nodes = sorted(d.glob("*_node.json"))
-        raws = sorted(d.glob("*_raw.md"))
-        if not nodes or not raws:
-            results.append({"dir": b["dir"], "error": "缺 node 或 raw"})
-            continue
-        node = json.loads(read(nodes[-1]))
-        raw = read(raws[-1])
-        sc = score(raw, node_to_text(node), claim_text=node_claims(node))
-        results.append({"dir": b["dir"], "score": sc["score"],
-                        "recall": sc["recall"], "precision": sc["precision"]})
+    状态机 sealed → reviewing → packing → cold；
+    失败晋级：第 1 次打回排队 / 第 2 次打回重练 / 第 3 次隔离。
+    全程不抛异常，崩溃靠 recover_packing 对齐。
+    """
+    ok, why = acquire_lock()
+    if not ok:
+        print(f"跳过：{why}")
+        return 2
+    try:
+        data = load_lifecycle()
+        for n in recover_packing(data):
+            print("  " + n)
 
-    good = [r for r in results if "score" in r]
-    print(f"核验 {len(sample)} 份封存：")
-    for r in results:
-        if "error" in r:
-            print(f"  {r['dir']}  ⚠ {r['error']}")
-        else:
-            print(f"  {r['dir']}  分数 {r['score']}（召回 {r['recall']} / 精确 {r['precision']}）")
+        sealed = _sealed_fifo(data)
+        if len(sealed) < REVIEW_EVERY:
+            print(f"封存还不够：{len(sealed)}/{REVIEW_EVERY}")
+            return 1
 
-    if len(good) < REVIEW_EVERY:
-        print("有批次缺文件，暂不打包。")
-        return 1
+        sample = sealed[:REVIEW_EVERY]
+        for b in sample:
+            b["state"] = "reviewing"
+        save_lifecycle(data)
 
-    avg = sum(r["score"] for r in good) / len(good)
-    low = min(r["score"] for r in good)
-    threshold = args.pass_score
-    print(f"平均 {avg:.1f} ｜ 最低 {low:.1f} ｜ 通过线 {threshold}")
+        results = [_score_batch(b) for b in sample]
+        good = [r for r in results if "score" in r]
+        print(f"核验 {len(sample)} 份封存：")
+        for r in results:
+            if "error" in r:
+                print(f"  {r['dir']}  ⚠ {r['error']}")
+            else:
+                print(f"  {r['dir']}  分数 {r['score']}（召回 {r['recall']} / 精确 {r['precision']}）")
 
-    passed = (avg >= threshold) and (low >= threshold - 10)
-    if not passed:
-        print("未通过：留在封存态，下次再核。")
-        return 1
+        if len(good) < REVIEW_EVERY:
+            for b in sample:
+                b["state"] = "sealed"
+            save_lifecycle(data)
+            print("有批次缺文件，退回封存态，不打包。")
+            return 1
 
-    pack_name = stamp() + "_pack"
-    pack_dir = COLD / pack_name
-    pack_dir.mkdir(parents=True, exist_ok=True)
-    moved = []
-    for b in sample:
-        src = ROOT / b["dir"]
-        dst = pack_dir / src.name
-        if src.exists():
-            shutil.move(str(src), str(dst))
-            moved.append(dst.name)
-        b["state"] = "cold"
-        b["review"] = {"score": next((r["score"] for r in good if r["dir"] == b["dir"]), None),
-                       "pack": pack_name, "at": now().isoformat()}
-    (pack_dir / "manifest.json").write_text(json.dumps({
-        "created_at": now().isoformat(), "batches": moved,
-        "avg_score": round(avg, 1), "min_score": round(low, 1), "results": results,
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
-    data["packs"].append({"name": pack_name, "batches": moved, "avg": round(avg, 1)})
-    save_lifecycle(data)
-    print(f"[已入冷箱] {pack_dir}（{len(moved)} 份）")
-    print("冷箱平时不读；要看就加 --cold。")
-    return 0
+        avg = sum(r["score"] for r in good) / len(good)
+        low = min(r["score"] for r in good)
+        threshold = args.pass_score
+        print(f"平均 {avg:.1f} ｜ 最低 {low:.1f} ｜ 通过线 {threshold}")
+        passed = (avg >= threshold) and (low >= threshold - 10)
+
+        if not passed:
+            key = deepseek_key()
+            for b in sample:
+                b["attempts"] = int(b.get("attempts", 0)) + 1
+                b["last_score"] = next((r["score"] for r in good if r["dir"] == b["dir"]), None)
+                if b["attempts"] >= MAX_ATTEMPTS:
+                    b["state"] = "quarantine"
+                    b["note"] = f"连续 {b['attempts']} 次未通过，待人工看"
+                elif b["attempts"] >= 2:
+                    done = _refine_batch(b, key)
+                    b["state"] = "sealed"
+                    b["note"] = "已打回重练" if done else "重练没跑成，留待下次"
+                else:
+                    b["state"] = "sealed"
+                    b["note"] = "第 1 次未过，排队首下次优先"
+            save_lifecycle(data)
+            print("未通过：不打包，已按次数晋级（打回 / 重练 / 隔离）。")
+            return 1
+
+        pack_name = stamp() + "_pack"
+        pack_rel = str((COLD / pack_name).relative_to(ROOT))
+        for b in sample:
+            b["state"] = "packing"
+            b["plan"] = {"pack": pack_name, "pack_dir": pack_rel}
+        save_lifecycle(data)
+
+        pack_dir = COLD / pack_name
+        pack_dir.mkdir(parents=True, exist_ok=True)
+        moved = []
+        for b in sample:
+            src = ROOT / b["dir"]
+            dst = pack_dir / src.name
+            if src.exists() and not dst.exists():
+                shutil.move(str(src), str(dst))
+            if dst.exists():
+                moved.append(dst.name)
+            b["state"] = "cold"
+            b["review"] = {"score": next((r["score"] for r in good if r["dir"] == b["dir"]), None),
+                           "pack": pack_name, "at": now().isoformat()}
+            save_lifecycle(data)
+
+        (pack_dir / "manifest.json").write_text(json.dumps({
+            "created_at": now().isoformat(), "batches": moved,
+            "avg_score": round(avg, 1), "min_score": round(low, 1), "results": results,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        data["packs"].append({"name": pack_name, "batches": moved, "avg": round(avg, 1)})
+        save_lifecycle(data)
+        print(f"[已入冷箱] {pack_dir}（{len(moved)} 份）")
+        print("冷箱平时不读；要看就加 --cold。")
+        return 0
+    finally:
+        release_lock()
 
 
 def cmd_cold(args) -> int:
@@ -1777,6 +1934,9 @@ def main() -> int:
 
     p18 = sub.add_parser("cold", help="看冷箱里有什么")
     p18.set_defaults(func=cmd_cold)
+
+    p19 = sub.add_parser("recover", help="崩溃恢复：把中途状态对齐到磁盘真相")
+    p19.set_defaults(func=cmd_recover)
 
     args = ap.parse_args()
     return args.func(args)
