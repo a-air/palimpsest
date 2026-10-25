@@ -41,7 +41,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parent
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 CONFIG = ROOT / "config.json"          # 本地配置（gitignore），优先级高于环境变量之外的一切
 DSH_CRED = Path(os.environ.get("USERPROFILE", os.path.expanduser("~"))) / ".dsh" / ".credentials.yaml"
 ARCHIVE = ROOT / "archive"
@@ -299,18 +299,19 @@ def auto_terms(text: str, top: int = 12, min_chars: int = 3000) -> list:
 
     counts = {"__total__": 0}
     left_ctx, right_ctx = {}, {}
+    BOS = "▁"          # 句界标记：让"句首/句尾"也成为一个邻字，而不是缺失
     for run in runs:
-        for n in (2, 3, 4, 5):
+        for n in (1, 2, 3, 4, 5):
             for i in range(len(run) - n + 1):
                 w = run[i:i + n]
                 counts[w] = counts.get(w, 0) + 1
                 counts["__total__"] += 1
-                if i > 0:
-                    left_ctx.setdefault(w, {})
-                    left_ctx[w][run[i - 1]] = left_ctx[w].get(run[i - 1], 0) + 1
-                if i + n < len(run):
-                    right_ctx.setdefault(w, {})
-                    right_ctx[w][run[i + n]] = right_ctx[w].get(run[i + n], 0) + 1
+                left_ctx.setdefault(w, {})
+                right_ctx.setdefault(w, {})
+                left_ctx[w][run[i - 1] if i > 0 else BOS] = \
+                    left_ctx[w].get(run[i - 1] if i > 0 else BOS, 0) + 1
+                nxt = run[i + n] if i + n < len(run) else BOS
+                right_ctx[w][nxt] = right_ctx[w].get(nxt, 0) + 1
 
     scored = []
     for w, c in counts.items():
@@ -321,9 +322,21 @@ def auto_terms(text: str, top: int = 12, min_chars: int = 3000) -> list:
         coh = _cohesion(w, counts)
         if coh < 1.5:
             continue
-        free = min(_entropy(left_ctx.get(w, {})), _entropy(right_ctx.get(w, {})))
+        # 自由度：邻字越杂越像词。
+        # 特例：一侧只有句界（"永远出现在句首"），这一侧没有信息，就看另一侧，
+        # 不要因为它的熵是 0 就把整个词判死。
+        hl = _entropy(left_ctx.get(w, {}))
+        hr = _entropy(right_ctx.get(w, {}))
+        l_only_bos = set(left_ctx.get(w, {}).keys()) == {BOS}
+        r_only_bos = set(right_ctx.get(w, {}).keys()) == {BOS}
+        if l_only_bos and not r_only_bos:
+            free = hr
+        elif r_only_bos and not l_only_bos:
+            free = hl
+        else:
+            free = min(hl, hr)
         if free <= 0.0:
-            continue          # 左右邻字固定 = 跨词边界的碎片，直接淘汰
+            continue          # 邻字完全固定 = 跨词边界的碎片
         scored.append({"w": w, "c": c, "coh": coh, "free": free, "score": coh * (1.0 + free)})
 
     # 剪枝：互相包含时，频次高的优先；频次相同则短的优先（长的多半是跨词边界的碎片）
@@ -396,7 +409,9 @@ CN_DIGIT = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
 SYNONYMS = [
     ("推迟", "延后"), ("延迟", "延后"), ("延期", "延后"), ("改期", "延后"),
     ("交货", "交付"), ("到货", "交付"),
-    ("涨价", "提价"), ("降价", "提价"),
+    # 只合同向词，绝不把反义词并到一起：
+    ("涨价", "提价"), ("加价", "提价"), ("上调", "提价"),
+    ("减价", "降价"), ("下调", "降价"),
     ("完成", "结束"), ("搞定", "结束"),
     ("号", "日"),
 ]
@@ -459,9 +474,13 @@ def support_ratio(clause: str, raw: str) -> float:
         return 0.0
     gram = len(b & bigrams(r)) / len(b)
 
-    sym = {s for s in features(clause) if s[0] in ("date", "num", "quote", "latin")}
+    sym = {f"{k}:{v}" for k, v in features(c) if k in ("date", "num", "quote", "latin")}
     if sym:
-        hit = len({s for s in sym if s in features(raw)}) / len(sym)
+        raw_sym = {f"{k}:{v}" for k, v in features(r) if k in ("date", "num", "quote", "latin")}
+        hit = len(sym & raw_sym) / len(sym)
+        if hit < 1.0:
+            # 只要有一个日期/数字在原文里找不到，就是编的，不许靠字面重叠混过去
+            return min(gram, hit)
         return max(gram, hit)
 
     # 数字兜底：归一化后逐个数字串比对
@@ -474,7 +493,15 @@ def support_ratio(clause: str, raw: str) -> float:
 
 # ─────────────────────────── 评分（符合函数） ───────────────────────────
 
-def score(raw: str, node_text: str, raw_len: int = None, probe_score: float = None) -> dict:
+def node_claims(node: dict) -> str:
+    """只取"声明"部分（事实 + 人格锚点），标题和摘要本来就是概括，不算声明。"""
+    parts = [f["text"] for f in node.get("facts", []) if isinstance(f, dict) and f.get("text")]
+    parts += [a for a in node.get("persona_anchors", []) if isinstance(a, str)]
+    return "\n".join(parts)
+
+
+def score(raw: str, node_text: str, raw_len: int = None, probe_score: float = None,
+          claim_text: str = None) -> dict:
     raw_f = features(raw)
     node_f = features(node_text)
 
@@ -493,10 +520,11 @@ def score(raw: str, node_text: str, raw_len: int = None, probe_score: float = No
         term_mode = "on"
 
     # 精确：节点里的每一条分句，能不能在原文找到支撑
-    clauses = [c.strip() for c in re.split(r"[。；;！!？?\n]", node_text) if len(c.strip()) >= 8]
+    claims = claim_text if claim_text is not None else node_text
+    clauses = [c.strip() for c in re.split(r"[。；;！!？?\n]", claims) if len(c.strip()) >= 8]
     supported, unsupported = 0, []
     for c in clauses:
-        if support_ratio(c, raw) >= 0.38:
+        if support_ratio(c, raw) >= 0.50:
             supported += 1
         else:
             unsupported.append(c[:40])
@@ -1167,7 +1195,7 @@ def cmd_compress(args) -> int:
     if args.probe:
         print("跑探针问答…")
         pv = probe(raw, text, key, args.probe_k)
-    sc = score(raw, text, probe_score=pv["probe"])
+    sc = score(raw, text, probe_score=pv["probe"], claim_text=node_claims(node))
 
     day = now().strftime("%Y-%m-%d")
     t = stamp()
@@ -1215,12 +1243,15 @@ def cmd_score(args) -> int:
     raw = read(args.raw)
     p = Path(args.node)
     node_text = read(p)
+    claims = None
     if p.suffix == ".json":
         try:
-            node_text = node_to_text(json.loads(node_text))
+            node = json.loads(node_text)
+            node_text = node_to_text(node)
+            claims = node_claims(node)
         except Exception:
             pass
-    sc = score(raw, node_text)
+    sc = score(raw, node_text, claim_text=claims)
     print(json.dumps(sc, ensure_ascii=False, indent=2))
     return 0
 

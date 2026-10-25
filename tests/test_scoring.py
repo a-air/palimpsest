@@ -53,10 +53,44 @@ def test_score_is_script_only():
     print("PASS test_score_is_script_only", sc["score"], sc["recall"], sc["precision"])
 
 
+def test_real_words_extracted():
+    """正向用例：高频三字词必须抽得出来（这条曾经是红的）。"""
+    text = "甲方与供应商约定，供应商需要在三月二日交付第一批货。" * 120
+    terms = R.auto_terms(text, top=12)
+    assert "供应商" in terms, f"高频三字词没抽出来：{terms}"
+    print("PASS test_real_words_extracted", terms[:6])
+
+
+def test_sentence_initial_not_killed():
+    """句首出现、没有左邻的词，不该因为左熵为 0 被判死。"""
+    text = "供应商报价高。供应商发货慢。供应商说可以。供应商又改口。供应商最后同意了。" * 150
+    terms = R.auto_terms(text, top=10)
+    assert "供应商" in terms, f"句首词被误杀：{terms}"
+    print("PASS test_sentence_initial_not_killed", terms[:5])
+
+
+def test_antonyms_not_merged():
+    """降价 与 提价 是反义，归一化不许把它们合并。"""
+    assert R.normalize("降价") != R.normalize("提价"), "反义词被合并了"
+    assert R.normalize("涨价") == R.normalize("提价"), "同义词应合并"
+    print("PASS test_antonyms_not_merged", R.normalize("降价"), R.normalize("提价"))
+
+
+def test_fabricated_clause_unsupported():
+    """节点里凭空多出来的日期，必须被判无支撑。"""
+    raw = "3月2日谈定交付。3月5日改期。3月8日客户确认。"
+    assert R.support_ratio("从3月5日改到3月18日", raw) < 0.5, "编造的日期被判成有支撑"
+    print("PASS test_fabricated_clause_unsupported")
+
+
 if __name__ == "__main__":
     test_paraphrase_supported()
     test_date_formats_unified()
     test_fragments_not_extracted()
     test_entity_recall_ignores_noise()
     test_score_is_script_only()
+    test_real_words_extracted()
+    test_sentence_initial_not_killed()
+    test_antonyms_not_merged()
+    test_fabricated_clause_unsupported()
     print("\n评分测试全部通过")
