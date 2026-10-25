@@ -1,0 +1,25 @@
+# 运行时数据——绝不进仓库
+archive/
+refined/
+state/
+*.log
+
+# 个人/真实语料
+*.private.md
+private/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 本地私人词表（真实名单绝不入库）
+scripts/privacy_patterns.txt
+
+# 临时 GitHub token（如果临时存这里，绝不入库）
+.github_token
+.github_token.txt
+
+# 本地配置（可能含 key）
+config.json

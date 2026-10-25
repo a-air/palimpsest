@@ -1,0 +1,7 @@
+﻿# 私人词表模板：复制成 scripts/privacy_patterns.txt 后填你自己的
+# 一行一个，preflight 会拿它扫全仓（运行时目录除外）
+YOUR_REAL_NAME
+YOUR_PARTNER_NAME
+YOUR_HOMETOWN
+YOUR_EMPLOYER
+ANY_MEDICAL_TERM
