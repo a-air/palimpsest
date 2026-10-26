@@ -86,6 +86,7 @@ python refiner.py history --id 3f468a476dc7
 python refiner.py score --raw raw.md --node node.json     # 脚本分（F1 × 效率）
 python refiner.py probe --raw raw.md --node node.json -k 6  # 探针验收（唯一真指标）
 ```
+
 ## 三个硬伤，以及现在怎么处理
 
 批评是这么来的，认了，也都改了：
