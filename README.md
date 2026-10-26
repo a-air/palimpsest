@@ -71,6 +71,21 @@ python refiner.py history --id 3f468a476dc7
 
 ---
 
+## 它到底是什么（定位）
+
+这个项目**不是**又一个记忆库。
+
+存储、双时态、可视化面板这些"记忆系统"该有的东西，已经有项目做得更完整
+（见 [和「山韵记忆」的对照](docs/COMPARISON.md)）。这里只做一件事：
+
+> **别人负责记住，这个项目负责证明它没记丢。**
+
+拿任何一个记忆系统的 `raw` 和 `node`，丢进来就能得到可比较的数字：
+
+```bash
+python refiner.py score --raw raw.md --node node.json     # 脚本分（F1 × 效率）
+python refiner.py probe --raw raw.md --node node.json -k 6  # 探针验收（唯一真指标）
+```
 ## 三个硬伤，以及现在怎么处理
 
 批评是这么来的，认了，也都改了：
