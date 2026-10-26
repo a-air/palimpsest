@@ -56,6 +56,56 @@ DEEPSEEK_MODEL = "deepseek-chat"
 GLM_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
 GLM_MODEL = "glm-5.3-flash"
 
+# ─────────────────────────── 多模型接入 ───────────────────────────
+# 全部走 OpenAI 兼容协议：换 provider 只换 base_url / key / model 三件事。
+PROVIDERS = {
+    "deepseek":   {"url": "https://api.deepseek.com/v1/chat/completions",
+                   "model": "deepseek-chat", "env": "DEEPSEEK_API_KEY", "cfg": "deepseek_api_key"},
+    "github":     {"url": "https://models.github.ai/inference/chat/completions",
+                   "model": "openai/gpt-4.1-mini", "env": "GITHUB_TOKEN", "cfg": "github_token"},
+    "openrouter": {"url": "https://openrouter.ai/api/v1/chat/completions",
+                   "model": "deepseek/deepseek-chat-v3.1:free", "env": "OPENROUTER_API_KEY", "cfg": "openrouter_api_key"},
+    "modelscope": {"url": "https://api-inference.modelscope.cn/v1/chat/completions",
+                   "model": "Qwen/Qwen3-32B", "env": "MODELSCOPE_API_KEY", "cfg": "modelscope_api_key"},
+    "siliconflow": {"url": "https://api.siliconflow.cn/v1/chat/completions",
+                    "model": "Qwen/Qwen3-8B", "env": "SILICONFLOW_API_KEY", "cfg": "siliconflow_api_key"},
+    "groq":       {"url": "https://api.groq.com/openai/v1/chat/completions",
+                   "model": "llama-3.3-70b-versatile", "env": "GROQ_API_KEY", "cfg": "groq_api_key"},
+    "cerebras":   {"url": "https://api.cerebras.ai/v1/chat/completions",
+                   "model": "llama3.1-8b", "env": "CEREBRAS_API_KEY", "cfg": "cerebras_api_key"},
+    "local":      {"url": "http://127.0.0.1:11434/v1/chat/completions",   # Ollama 默认
+                   "model": "qwen2.5:7b", "env": "", "cfg": "local_model"},
+}
+
+LLM = {"name": "deepseek", "url": DEEPSEEK_URL, "model": DEEPSEEK_MODEL, "key": ""}
+
+
+def resolve_provider(name: str = None) -> dict:
+    """把 config.json / 环境变量 / 内置默认解析成一个可用的 provider。"""
+    conf = load_config()
+    name = (name or conf.get("provider") or "deepseek").strip()
+    base = dict(PROVIDERS.get(name, PROVIDERS["deepseek"]))
+    over = ((conf.get("providers") or {}).get(name) or {})
+    base.update({k: v for k, v in over.items() if v})
+
+    url = over.get("base_url") or conf.get("local_base_url") if name == "local" else over.get("url") or base["url"]
+    if name == "local":
+        url = (over.get("base_url") or conf.get("local_base_url") or "http://127.0.0.1:11434/v1").rstrip("/") + "/chat/completions"
+
+    key = os.environ.get(base.get("env", "") or "", "").strip()
+    if not key:
+        key = str(conf.get(base.get("cfg", ""), "") or "").strip()
+    if not key and name == "deepseek":
+        key = deepseek_key()
+
+    return {"name": name, "url": url, "model": over.get("model") or base["model"], "key": key}
+
+
+def use_provider(name: str = None) -> dict:
+    global LLM
+    LLM = resolve_provider(name)
+    return LLM
+
 REFINE_EVERY = 4          # 每 4 次压缩做一次机理精炼
 EFF_FULL_AT = 0.70        # 压缩率到 70% 即满分
 
@@ -652,7 +702,7 @@ def answer_matches(got: str, gold: str) -> bool:
 def probe(raw: str, node_text: str, key: str, k: int = 6) -> dict:
     """探针问答：出题时连着标准答案一起出，判分比对答案，不看"字有没有出现过"。"""
     try:
-        data = chat_json(DEEPSEEK_URL, key, DEEPSEEK_MODEL, PROBE_Q_SYS.replace("{k}", str(k)),
+        data = chat_json(LLM["url"], key or LLM["key"], LLM["model"], PROBE_Q_SYS.replace("{k}", str(k)),
                          f"【原文】\n{raw[:8000]}\n\n出 {k} 道题，连标准答案。", max_tokens=900, temperature=0.2)
     except Exception as e:
         return {"probe": None, "qa": [], "error": f"出题失败：{type(e).__name__}"}
@@ -663,7 +713,7 @@ def probe(raw: str, node_text: str, key: str, k: int = 6) -> dict:
     items = items[:k]
 
     try:
-        ans = chat_json(DEEPSEEK_URL, key, DEEPSEEK_MODEL, PROBE_A_SYS,
+        ans = chat_json(LLM["url"], key or LLM["key"], LLM["model"], PROBE_A_SYS,
                         f"【节点】\n{node_text[:3000]}\n\n【题目】\n" +
                         "\n".join(f"{i+1}. {x['q']}" for i, x in enumerate(items)) +
                         "\n\n逐题作答，输出 JSON。", max_tokens=900, temperature=0.0)
@@ -1334,7 +1384,7 @@ def classify_pairs(pairs: list, key: str) -> dict:
         f'{i}. old={p["old"]["id"]} 「{p["old"]["text"]}」\n   new={p["new"]["id"]} 「{p["new"]["text"]}」'
         for i, p in enumerate(pairs, 1))
     try:
-        out = chat(DEEPSEEK_URL, key, DEEPSEEK_MODEL, MERGE_SYS, body, max_tokens=600, temperature=0.0)
+        out = chat(LLM["url"], key or LLM["key"], LLM["model"], MERGE_SYS, body, max_tokens=600, temperature=0.0)
         data = extract_json(out)
         return {(x["old"], x["new"]): x["relation"] for x in data.get("pairs", [])}
     except Exception:
@@ -1483,9 +1533,10 @@ def cmd_compress(args) -> int:
         print(f"原文只有 {len(raw)} 字符，低于 {args.min_chars}——压了会比原文更长，没意义。")
         print("真的要做就加 --force。")
         return 3
-    key = deepseek_key()
-    if not key:
-        print("拿不到 DeepSeek key（env / WSL 配置都没有）")
+    cfg = use_provider(getattr(args, "provider", None))
+    key = cfg["key"]
+    if not key and cfg["name"] != "local":
+        print(f"provider={cfg['name']} 没有 key：设环境变量或写进 config.json")
         return 2
 
     # 幂等：同一份原文只归档一次
@@ -1620,9 +1671,10 @@ def cmd_probe(args) -> int:
             node_text = node_to_text(json.loads(node_text))
         except Exception:
             pass
-    key = deepseek_key()
-    if not key:
-        print("拿不到 DeepSeek key")
+    cfg = use_provider(getattr(args, "provider", None))
+    key = cfg["key"]
+    if not key and cfg["name"] != "local":
+        print(f"provider={cfg['name']} 没有 key")
         return 2
     pv = probe(raw, node_text, key, args.k)
     print(json.dumps(pv, ensure_ascii=False, indent=2))
@@ -1728,7 +1780,7 @@ def cmd_doctor(args) -> int:
 
     if args.ping and d:
         try:
-            chat(DEEPSEEK_URL, d, DEEPSEEK_MODEL, "只回一个字", "ping", max_tokens=4, temperature=0)
+            chat(LLM["url"], d or LLM["key"], LLM["model"], "只回一个字", "ping", max_tokens=4, temperature=0)
             print("连通性       OK")
         except Exception as e:
             print(f"连通性       失败：{type(e).__name__}")
@@ -1808,9 +1860,56 @@ def compress_pool(pool: str, key: str) -> tuple:
     for i, c in enumerate(chunks, 1):
         if len(chunks) > 1:
             print(f"  分块 {i}/{len(chunks)}（{len(c)} 字符）")
-        nodes.append(chat_json(DEEPSEEK_URL, key, DEEPSEEK_MODEL, COMPRESS_SYS,
+        nodes.append(chat_json(LLM["url"], key or LLM["key"], LLM["model"], COMPRESS_SYS,
                                f"【原文】\n{c}\n\n请输出记忆节点 JSON。"))
     return merge_nodes(nodes), len(chunks)
+
+
+def cmd_providers(args) -> int:
+    """列出所有可接入的模型服务，看谁有 key。"""
+    active = resolve_provider(None)["name"]
+    print(f"{'名称':<12}{'默认模型':<34}{'key':<6}{'端点'}")
+    for name in PROVIDERS:
+        p = resolve_provider(name)
+        has = "有" if (p["key"] or name == "local") else "—"
+        mark = " ←当前" if name == active else ""
+        print(f"{name:<12}{p['model'][:33]:<34}{has:<6}{p['url']}{mark}")
+    print("\nkey 按 环境变量 → config.json → DSH 凭证 的顺序找。")
+    print("本地模型：config.json 里设 local_base_url（Ollama 11434 / LM Studio 1234 / llama.cpp 8080）。")
+    return 0
+
+
+def cmd_panel(args) -> int:
+    """多模型复查：同一份 raw + node，让 N 个模型各跑一遍探针，结果并排放。"""
+    raw = read(args.raw)
+    p = Path(args.node)
+    node_text = read(p)
+    if p.suffix == ".json":
+        try:
+            node_text = node_to_text(json.loads(node_text))
+        except Exception:
+            pass
+
+    names = [x.strip() for x in args.models.split(",") if x.strip()]
+    rows = []
+    for name in names:
+        cfg = use_provider(name)
+        if not cfg["key"] and name != "local":
+            rows.append((name, cfg["model"], "无 key", "-"))
+            continue
+        t0 = time.time()
+        try:
+            pv = probe(raw, node_text, cfg["key"], args.k)
+            val = pv.get("probe")
+            rows.append((name, cfg["model"], "?" if val is None else f"{val:.2f}",
+                         f"{time.time()-t0:.1f}s"))
+        except Exception as e:
+            rows.append((name, cfg["model"], f"失败:{type(e).__name__}", "-"))
+
+    print(f"\n{'provider':<12}{'model':<34}{'探针':<8}{'耗时'}")
+    for name, model, score, took in rows:
+        print(f"{name:<12}{model[:33]:<34}{score:<8}{took}")
+    return 0
 
 
 def cmd_context(args) -> int:
@@ -1856,6 +1955,7 @@ def main() -> int:
     p1.add_argument("--force", action="store_true")
     p1.add_argument("--probe", action="store_true", help="跑探针问答（多两次模型调用）")
     p1.add_argument("--probe-k", type=int, default=6, dest="probe_k")
+    p1.add_argument("--provider", default=None, help="deepseek / github / openrouter / local …")
     p1.add_argument("--keep-turns", type=int, default=0, dest="keep_turns",
                     help="滑动窗口：保留最近 N 轮原文不进压缩池")
     p1.set_defaults(func=cmd_compress)
@@ -1879,6 +1979,7 @@ def main() -> int:
     p6 = sub.add_parser("probe", help="探针问答：只给节点，看能答对几道")
     p6.add_argument("--raw", required=True)
     p6.add_argument("--node", required=True)
+    p6.add_argument("--provider", default=None)
     p6.add_argument("-k", type=int, default=6)
     p6.set_defaults(func=cmd_probe)
 
@@ -1937,6 +2038,16 @@ def main() -> int:
 
     p19 = sub.add_parser("recover", help="崩溃恢复：把中途状态对齐到磁盘真相")
     p19.set_defaults(func=cmd_recover)
+
+    p20 = sub.add_parser("providers", help="列出可接入的模型服务与 key 状态")
+    p20.set_defaults(func=cmd_providers)
+
+    p21 = sub.add_parser("panel", help="多模型复查：同一份 raw+node 让 N 个模型探针")
+    p21.add_argument("--raw", required=True)
+    p21.add_argument("--node", required=True)
+    p21.add_argument("--models", required=True, help="逗号分隔，如 deepseek,github,local")
+    p21.add_argument("-k", type=int, default=4)
+    p21.set_defaults(func=cmd_panel)
 
     args = ap.parse_args()
     return args.func(args)

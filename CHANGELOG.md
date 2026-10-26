@@ -166,3 +166,11 @@
 ### 测试
 - 新增 `tests/test_state_machine.py`（5 项）：崩溃恢复、隔离晋级、FIFO 不饿死、锁、僵死锁
 - 七套共 37 项
+## 未发布（多模型）
+
+- **多 provider 接入**：`deepseek` / `github`(GitHub Models) / `openrouter` / `modelscope` /
+  `siliconflow` / `groq` / `cerebras` / `local`，全部走 OpenAI 兼容协议
+- 新增 `providers` 命令：看谁配了 key、端点是什么
+- 新增 `panel` 命令：同一份 raw+node 让多个模型各跑探针，结果并排比较（多模型复查用）
+- `compress` / `probe` 支持 `--provider`；key 查找顺序：环境变量 → config.json → DSH 凭证
+- 本地模型：`config.json` 设 `local_base_url`（Ollama 11434 / LM Studio 1234 / llama.cpp 8080）

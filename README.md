@@ -71,6 +71,48 @@ python refiner.py history --id 3f468a476dc7
 
 ---
 
+## 接哪些模型（含本地）
+
+全部走 OpenAI 兼容协议，换 provider 只换三件事：`base_url` / `key` / `model`。
+
+```bash
+python refiner.py providers                      # 看谁配了 key
+python refiner.py compress --raw d.md --provider github      # 用 GitHub Models 的 GPT-4.1-mini
+python refiner.py probe --raw d.md --node n.json --provider local   # 用本地 Ollama
+python refiner.py panel  --raw d.md --node n.json --models deepseek,github,local
+```
+
+| provider | 说明 | key 从哪来 |
+|---|---|---|
+| `deepseek` | 默认，便宜 | `DEEPSEEK_API_KEY` / DSH 凭证 |
+| `github` | GitHub Models，免费 GPT-4.1 / 4o / o4-mini / Llama / DeepSeek | PAT 勾 `models:read` |
+| `openrouter` | 一批 `:free` 模型 | openrouter.ai → Keys |
+| `modelscope` | 魔搭，国内直连 | 访问令牌 |
+| `siliconflow` | 硅基流动，国内 | 注册赠额度 |
+| `groq` / `cerebras` | 免费额度大、速度快 | 各自注册 |
+| `local` | 本地 OpenAI 兼容服务 | 不需要 key |
+
+本地怎么起（任选一个，端口写进 `config.json`）：
+
+```bash
+ollama serve                        # 默认 11434，model 写 qwen2.5:7b
+# 或 LM Studio 开 OpenAI 兼容服务    # 1234
+# 或 llama.cpp server              # 8080
+```
+
+```json
+{
+  "provider": "local",
+  "local_base_url": "http://127.0.0.1:11434/v1",
+  "providers": {
+    "local": { "model": "qwen2.5:7b" },
+    "github": { "model": "openai/gpt-4.1-mini", "api_key": "github_pat_..." }
+  }
+}
+```
+
+---
+
 ## 它到底是什么（定位）
 
 这个项目**不是**又一个记忆库。
