@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="1200" viewBox="0 0 880 1200" font-family="-apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8b949e"/>
+    </marker>
+  </defs>
+
+  <rect width="880" height="1200" fill="#0d1117"/>
+
+  <text x="40" y="62" fill="#e6edf3" font-size="26" font-weight="700">支援未来 · 记忆保存与重建架构</text>
+  <text x="40" y="94" fill="#8b949e" font-size="14">Memory that outlives the model — compress, verify, version, seal, rebuild</text>
+
+  <!-- 原始对话 -->
+  <rect x="40" y="130" width="800" height="86" rx="12" fill="#161b22" stroke="#30363d"/>
+  <text x="64" y="164" fill="#e6edf3" font-size="17" font-weight="600">原始对话</text>
+  <text x="64" y="190" fill="#8b949e" font-size="13">完整文本 · 时间 · 上下文 ｜ raw conversation, kept verbatim</text>
+  <line x1="440" y1="216" x2="440" y2="248" stroke="#8b949e" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- 记忆精炼器 -->
+  <rect x="40" y="250" width="800" height="150" rx="12" fill="#161b22" stroke="#58a6ff"/>
+  <text x="64" y="284" fill="#58a6ff" font-size="17" font-weight="600">记忆精炼器 Memory Refiner</text>
+  <text x="64" y="314" fill="#c9d1d9" font-size="13">· 模型提取事实 / 决策 / 情绪 / 任务 / 锚点</text>
+  <text x="64" y="342" fill="#c9d1d9" font-size="13">· 脚本评分：F1(召回, 精确) × 压缩效率 — 模型只写，不评分</text>
+  <text x="64" y="370" fill="#c9d1d9" font-size="13">· 探针问答：出题带标准答案，只给节点作答 —— 这才是真指标</text>
+  <line x1="440" y1="400" x2="440" y2="432" stroke="#8b949e" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- 宪章层 / 事件层 -->
+  <rect x="40" y="434" width="386" height="150" rx="12" fill="#161b22" stroke="#3fb950"/>
+  <text x="64" y="468" fill="#3fb950" font-size="16" font-weight="600">宪章层 Constitution</text>
+  <text x="64" y="496" fill="#c9d1d9" font-size="13">人格 · 原则 · 关系 · 医疗基线</text>
+  <text x="64" y="522" fill="#8b949e" font-size="12">append-only ｜ 一次不压缩</text>
+  <rect x="64" y="540" width="86" height="26" rx="13" fill="#21262d" stroke="#30363d"/>
+  <text x="80" y="558" fill="#e6edf3" font-size="12">只追加</text>
+
+  <rect x="454" y="434" width="386" height="150" rx="12" fill="#161b22" stroke="#d29922"/>
+  <text x="478" y="468" fill="#d29922" font-size="16" font-weight="600">事件层 Facts</text>
+  <text x="478" y="496" fill="#c9d1d9" font-size="13">事实 · 出处 · 置信度 · 版本链</text>
+  <text x="478" y="522" fill="#8b949e" font-size="12">superseded 不删除 ｜ 判不出就都留着</text>
+  <rect x="478" y="540" width="86" height="26" rx="13" fill="#21262d" stroke="#30363d"/>
+  <text x="494" y="558" fill="#e6edf3" font-size="12">可演化</text>
+
+  <line x1="440" y1="584" x2="440" y2="616" stroke="#8b949e" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- 原文档案层 -->
+  <rect x="40" y="618" width="800" height="96" rx="12" fill="#161b22" stroke="#30363d"/>
+  <text x="64" y="652" fill="#e6edf3" font-size="17" font-weight="600">原文档案层 Archive</text>
+  <text x="64" y="678" fill="#8b949e" font-size="13">raw / node / meta 三件套，一个字不删；未来不依赖本程序也能读</text>
+  <text x="64" y="700" fill="#8b949e" font-size="12">SQLite FTS5 索引：3000 节点检索 1.5 ms（索引可丢弃可重建）</text>
+  <line x1="440" y1="714" x2="440" y2="746" stroke="#8b949e" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- 生命周期 -->
+  <rect x="40" y="748" width="800" height="150" rx="12" fill="#161b22" stroke="#a371f7"/>
+  <text x="64" y="782" fill="#a371f7" font-size="17" font-weight="600">生命周期 Lifecycle</text>
+  <text x="64" y="812" fill="#c9d1d9" font-size="13">热 Hot → 封存 Sealed → 核验 Review（4 份一次，≥85 才过）→ 冷箱 Cold</text>
+  <text x="64" y="840" fill="#8b949e" font-size="12">平时只读精炼后的节点；封存原文不参与日常读取</text>
+  <text x="64" y="866" fill="#8b949e" font-size="12">崩溃可恢复（packing 状态按磁盘对齐）· 文件锁 · 失败三次进隔离区</text>
+  <line x1="440" y1="898" x2="440" y2="930" stroke="#8b949e" stroke-width="2" marker-end="url(#a)"/>
+
+  <!-- 未来重建 -->
+  <rect x="40" y="932" width="800" height="104" rx="12" fill="#161b22" stroke="#58a6ff" stroke-dasharray="6 4"/>
+  <text x="64" y="966" fill="#58a6ff" font-size="17" font-weight="600">未来的重新精炼 Rebuild</text>
+  <text x="64" y="994" fill="#c9d1d9" font-size="13">用新模型重新理解旧材料，而不是永远受当前模型的记忆摘要限制</text>
+  <text x="64" y="1018" fill="#8b949e" font-size="12">rebuild / refine / index 随时可重跑 —— 文件是唯一真相</text>
+
+  <!-- 页脚 -->
+  <text x="40" y="1080" fill="#8b949e" font-size="13" font-style="italic">有些东西不可能完美地交给未来。能做的，是别在交出去之前就把它弄丢了。</text>
+  <text x="40" y="1112" fill="#58a6ff" font-size="13">github.com/a-air/palimpsest</text>
+  <text x="40" y="1140" fill="#30363d" font-size="12">MIT · Python stdlib only · 37 tests · CI green</text>
+</svg>

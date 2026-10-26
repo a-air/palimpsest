@@ -5,6 +5,8 @@
 >
 > *A memory refiner with probe-based verification and a fact version chain. No self-grading.*
 
+![架构总览](docs/architecture.svg)
+
 ---
 
 ## 为什么做这个

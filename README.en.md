@@ -7,6 +7,8 @@
 - No deletion: raw text, node and metadata are archived on every compression.
 - Facts are versioned (`superseded`), never overwritten.
 
+![architecture](docs/architecture.en.svg)
+
 ## Why
 
 Most context-compression tools answer one question: *is the summary short enough?*
